@@ -3,7 +3,7 @@
 #
 #   powershell -File Scripts\test_windows_backend.ps1 -BackendPath path\to\TerminalBackend.exe
 #
-# The backend's directory needs terminal-web next to it, and Outer Shell's own
+# The backend's directory needs the page in a web folder next to it, and Outer Shell's own
 # Terminal must not be running, since both use the same pipe.
 param([Parameter(Mandatory)][string]$BackendPath)
 $ErrorActionPreference = 'Stop'

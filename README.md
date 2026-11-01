@@ -34,7 +34,7 @@ Command Prompt.
 Backend/main.c         TerminalBackend for macOS and Linux
 Backend/Keeper.c       session keepers for macOS and Linux
 Backend/Session.c      the keeper protocol and output tracking, shared with Windows
-Windows/               TerminalBackend for Windows, built by Outer Shell's Windows build
+Windows/               TerminalBackend for Windows, built with Outer Shell's Windows build
 Resources/TerminalWeb/ the page, with xterm.js 5.5.0 and its fit addon (MIT)
 Scripts/               icon rendering (app-icon.png is the apple.terminal symbol), release packaging and tests
 app                    development tasks
@@ -77,5 +77,7 @@ Outer Shell's app catalog installs Terminal from release archives:
 2. Run `Scripts/package_release.sh` on a Mac. It builds the macOS backend and
    writes `build/release/Terminal/<variant>.tar.gz`.
 
-The Windows backend is compiled into Outer Shell's Windows build, which expects
-this repository next to Outer Shell's (`TERMINAL_ROOT`).
+3. Build the Windows archives with Outer Shell's Windows build, which expects
+   this repository next to Outer Shell's: `Windows\build.ps1 -App Terminal`
+   lays out `Terminal\`, which is signed and archived as
+   `windows-<architecture>.tar.gz`.

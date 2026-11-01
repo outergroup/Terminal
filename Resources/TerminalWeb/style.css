@@ -79,7 +79,7 @@ button {
   line-height: 1;
 }
 
-.new-session:hover, .new-session:focus-visible { background: var(--line); }
+.new-session:focus-visible { background: var(--line); }
 
 .sessions-header { position: relative; }
 
@@ -106,12 +106,12 @@ button {
   text-align: left;
 }
 
-.shell-menu button:hover, .shell-menu button:focus-visible { background: var(--line); outline: none; }
+.shell-menu button:focus-visible { background: var(--line); outline: none; }
 
 .session-list {
   list-style: none;
   margin: 0;
-  padding: 0 8px 12px;
+  padding: 0 8px calc(12px + var(--keyboard-inset, 0px));
   overflow-y: auto;
   flex: 1;
 }
@@ -128,7 +128,6 @@ button {
   text-align: left;
 }
 
-.session:hover { background: var(--line); }
 .session[aria-current="true"] { background: var(--selected); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
 
 .session-name, .session-detail {
@@ -158,8 +157,13 @@ button {
 }
 
 .session-item { position: relative; }
-.session-item:hover .close-session, .close-session:focus-visible, .session-item.current .close-session { opacity: 1; }
-.close-session:hover { background: var(--line); color: var(--text); }
+.close-session:focus-visible, .session-item.current .close-session { opacity: 1; }
+
+/* On touch screens, a tap that reveals hover content counts only as hover,
+   so hover styles apply only while a mouse or trackpad is in use. */
+.mouse .new-session:hover, .mouse .shell-menu button:hover, .mouse .session:not([aria-current="true"]):hover { background: var(--line); }
+.mouse .session-item:hover .close-session { opacity: 1; }
+.mouse .close-session:hover { background: var(--line); color: var(--text); }
 
 .terminals {
   position: relative;
@@ -170,7 +174,7 @@ button {
 
 .terminal-view {
   position: absolute;
-  inset: 0;
+  inset: 0 0 var(--keyboard-inset, 0px);
   padding: 6px 0 0 8px;
   padding-bottom: env(safe-area-inset-bottom);
 }

@@ -15,6 +15,8 @@
   let home = "";
   let selected = decodeURIComponent(location.hash.slice(1));
   let creating = null;
+  let fontSize = 13;
+  try { fontSize = clampFontSize(Number(localStorage.getItem("fontSize")) || fontSize); } catch {}
 
   const unescapeField = value => value.replace(/\\(.)/g, (_, c) => c === "t" ? "\t" : c === "n" ? "\n" : c === "r" ? "\r" : c);
 
@@ -37,8 +39,11 @@
       const shellFields = (response.headers.get("Terminal-Shells") || "").split("\t").filter(Boolean);
       shells = [];
       for (let i = 0; i + 1 < shellFields.length; i += 2) shells.push({ kind: shellFields[i], name: shellFields[i + 1] });
+      // Sessions are listed by recent activity when the page opens, then keep
+      // their places so that rows don't move under a finger; new ones go first.
+      const previous = sessions.map(session => session.id);
       sessions = parseSessions(await response.text());
-      sessions.sort((a, b) => b.active - a.active || a.created - b.created);
+      sessions.sort((a, b) => previous.indexOf(a.id) - previous.indexOf(b.id) || b.active - a.active || a.created - b.created);
       for (const [id, view] of views) {
         if (!view.ended && !sessions.some(session => session.id === id)) dropView(id);
       }
@@ -75,35 +80,68 @@
     return title && title !== session.command ? title : session.command || "Terminal";
   }
 
+  // Rows are updated in place: on touch screens, a tap is dropped when the
+  // content under it is replaced, and busy sessions retitle themselves often.
+  const rows = new Map();
+
+  function makeRow(id) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "session";
+    const name = document.createElement("span");
+    name.className = "session-name";
+    name.append("");
+    const detail = document.createElement("span");
+    detail.className = "session-detail";
+    detail.append("");
+    button.append(name, detail);
+    button.addEventListener("click", () => select(id));
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "close-session";
+    close.textContent = "×";
+    close.title = "Close terminal";
+    close.addEventListener("click", () => {
+      const session = sessions.find(candidate => candidate.id === id);
+      if (session) closeSession(session);
+    });
+    item.append(button, close);
+    return { item, button, name: name.firstChild, detail: detail.firstChild, close };
+  }
+
+  function setText(node, text) {
+    if (node.data !== text) node.data = text;
+  }
+
+  function setAttribute(element, name, value) {
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+  }
+
   function render() {
-    list.replaceChildren(...sessions.map(session => {
-      const item = document.createElement("li");
-      item.className = "session-item" + (session.id === selected ? " current" : "");
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "session";
-      button.setAttribute("aria-current", String(session.id === selected));
-      const name = document.createElement("span");
-      name.className = "session-name";
-      name.textContent = sessionName(session);
-      const detail = document.createElement("span");
-      detail.className = "session-detail";
+    const items = sessions.map(session => {
+      let row = rows.get(session.id);
+      if (!row) {
+        row = makeRow(session.id);
+        rows.set(session.id, row);
+      }
+      const current = session.id === selected;
+      setAttribute(row.item, "class", "session-item" + (current ? " current" : ""));
+      setAttribute(row.button, "aria-current", String(current));
+      setText(row.name, sessionName(session));
       const view = views.get(session.id);
       const elsewhere = session.clients - (view && view.attached ? 1 : 0);
-      detail.textContent = [describeLocation(session.cwd), describeAge(session.active), elsewhere > 0 ? "open elsewhere" : ""]
-        .filter(Boolean).join(" · ");
-      button.append(name, detail);
-      button.addEventListener("click", () => select(session.id));
-      const close = document.createElement("button");
-      close.type = "button";
-      close.className = "close-session";
-      close.textContent = "×";
-      close.title = "Close terminal";
-      close.setAttribute("aria-label", `Close ${sessionName(session)}`);
-      close.addEventListener("click", () => closeSession(session));
-      item.append(button, close);
-      return item;
-    }));
+      setText(row.detail, [describeLocation(session.cwd), describeAge(session.active), elsewhere > 0 ? "open elsewhere" : ""]
+        .filter(Boolean).join(" · "));
+      setAttribute(row.close, "aria-label", `Close ${sessionName(session)}`);
+      return row.item;
+    });
+    for (const id of rows.keys()) {
+      if (!sessions.some(session => session.id === id)) rows.delete(id);
+    }
+    if (items.length !== list.children.length || items.some((item, index) => list.children[index] !== item)) {
+      list.replaceChildren(...items);
+    }
   }
 
   function select(id) {
@@ -144,11 +182,25 @@
     await refresh();
   }
 
+  function clampFontSize(size) {
+    return Math.min(32, Math.max(8, Math.round(size)));
+  }
+
+  function setFontSize(size) {
+    size = clampFontSize(size);
+    if (size === fontSize) return;
+    fontSize = size;
+    for (const view of views.values()) view.terminal.options.fontSize = size;
+    const view = views.get(selected);
+    if (view) view.fit.fit();
+    try { localStorage.setItem("fontSize", String(size)); } catch {}
+  }
+
   function measureSize() {
     const current = views.get(selected);
     if (current) return { columns: current.terminal.cols, rows: current.terminal.rows };
-    const columns = Math.max(20, Math.floor((terminals.clientWidth - 16) / 7.8));
-    const rows = Math.max(5, Math.floor((terminals.clientHeight - 8) / 17));
+    const columns = Math.max(20, Math.floor((terminals.clientWidth - 16) / (fontSize * 0.6)));
+    const rows = Math.max(5, Math.floor((terminals.clientHeight - 8) / (fontSize * 1.3)));
     return { columns, rows };
   }
 
@@ -170,7 +222,7 @@
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace',
-      fontSize: 13,
+      fontSize,
       scrollback: 10000,
       allowProposedApi: true,
       theme: { background: "#161616" },
@@ -332,9 +384,26 @@
     newButton.setAttribute("aria-expanded", "true");
     shellMenu.querySelector("button").focus();
   });
+  document.addEventListener("pointerover", event => {
+    document.documentElement.classList.toggle("mouse", event.pointerType === "mouse");
+  }, true);
   document.addEventListener("click", closeShellMenu);
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") closeShellMenu();
+  });
+  // Pinching changes the font size rather than zooming the page.
+  let pinchFontSize = null;
+  document.addEventListener("gesturestart", event => {
+    event.preventDefault();
+    pinchFontSize = fontSize;
+  });
+  document.addEventListener("gesturechange", event => {
+    event.preventDefault();
+    if (pinchFontSize !== null) setFontSize(pinchFontSize * event.scale);
+  });
+  document.addEventListener("gestureend", event => {
+    event.preventDefault();
+    pinchFontSize = null;
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") reconnectAll();
@@ -345,6 +414,20 @@
     const id = decodeURIComponent(location.hash.slice(1));
     if (id && id !== selected) select(id);
   });
+  // An on-screen keyboard covers the page rather than resizing it. The page
+  // keeps its size so the keyboard slides over it, and the terminal moves its
+  // bottom edge above the keyboard.
+  function fitToVisualViewport() {
+    const viewport = window.visualViewport;
+    const covered = Math.max(0, document.documentElement.clientHeight - viewport.height - viewport.offsetTop);
+    document.documentElement.style.setProperty("--keyboard-inset", `${covered}px`);
+    if (viewport.offsetTop || window.scrollY) window.scrollTo(0, 0);
+  }
+  if (window.visualViewport) {
+    visualViewport.addEventListener("resize", fitToVisualViewport);
+    visualViewport.addEventListener("scroll", fitToVisualViewport);
+    fitToVisualViewport();
+  }
   new ResizeObserver(() => {
     const view = views.get(selected);
     if (view) view.fit.fit();

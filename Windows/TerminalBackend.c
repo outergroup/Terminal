@@ -946,7 +946,7 @@ int wmain(int argc, wchar_t **argv) {
     if (!app_stop) return 1;
     SetConsoleCtrlHandler(stop_app, TRUE);
     char *directory = win_executable_directory();
-    app_web = directory ? win_join(directory, "terminal-web") : NULL;
+    app_web = directory ? win_join(directory, "web") : NULL;
     free(directory);
     char *name = win_pipe("org.outershell.Terminal");
     PipeServer *server = app_web && name ? pipe_server_start(name, serve, NULL) : NULL;
