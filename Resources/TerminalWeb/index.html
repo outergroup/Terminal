@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="light dark">
+<title>Terminal</title>
+<link rel="icon" href="/web/app-icon.png">
+<link rel="stylesheet" href="/web/xterm.css">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<div class="app">
+  <nav class="sessions" aria-label="Terminal sessions">
+    <div class="sessions-header">
+      <h1>Terminal</h1>
+      <button class="new-session" type="button" aria-label="New terminal" title="New terminal" aria-haspopup="menu" aria-expanded="false">+</button>
+    </div>
+    <ul class="session-list"></ul>
+  </nav>
+  <main class="terminals">
+    <p class="status" role="status" aria-live="polite"></p>
+  </main>
+</div>
+<script src="/web/xterm.js"></script>
+<script src="/web/addon-fit.js"></script>
+<script src="/web/app.js"></script>
+</body>
+</html>

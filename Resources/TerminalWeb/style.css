@@ -1,0 +1,234 @@
+:root {
+  --background: #f5f5f4;
+  --sidebar: #ececea;
+  --text: #1c1c1b;
+  --secondary: #6b6b68;
+  --line: rgba(0, 0, 0, 0.1);
+  --selected: #ffffff;
+  --accent: #2f6fdb;
+  --terminal: #161616;
+  --notice: rgba(40, 40, 40, 0.88);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1e1e1d;
+    --sidebar: #252524;
+    --text: #ececea;
+    --secondary: #9a9a96;
+    --line: rgba(255, 255, 255, 0.1);
+    --selected: #34342f;
+    --accent: #6ea0f5;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--terminal);
+  color: var(--text);
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  height: 100dvh;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  background: var(--background);
+}
+
+.sessions {
+  width: 240px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
+}
+
+.sessions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px 16px;
+}
+
+.sessions-header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.new-session {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.new-session:hover, .new-session:focus-visible { background: var(--line); }
+
+.sessions-header { position: relative; }
+
+.shell-menu {
+  position: absolute;
+  top: 40px;
+  right: 10px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--selected);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.shell-menu button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+}
+
+.shell-menu button:hover, .shell-menu button:focus-visible { background: var(--line); outline: none; }
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.session {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  padding: 7px 30px 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+}
+
+.session:hover { background: var(--line); }
+.session[aria-current="true"] { background: var(--selected); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+
+.session-name, .session-detail {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-name { font-weight: 500; }
+.session-detail { color: var(--secondary); font-size: 11.5px; margin-top: 2px; }
+
+.close-session {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--secondary);
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.session-item { position: relative; }
+.session-item:hover .close-session, .close-session:focus-visible, .session-item.current .close-session { opacity: 1; }
+.close-session:hover { background: var(--line); color: var(--text); }
+
+.terminals {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  background: var(--terminal);
+}
+
+.terminal-view {
+  position: absolute;
+  inset: 0;
+  padding: 6px 0 0 8px;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.terminal-view[hidden] { display: none; }
+.terminal-view .xterm { height: 100%; }
+
+.notice {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 10;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--notice);
+  color: #fff;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: #9a9a96;
+  pointer-events: none;
+}
+
+.status:empty { display: none; }
+
+@media (max-width: 700px) {
+  .app { flex-direction: column; }
+
+  .sessions {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .sessions-header { padding: 6px 4px 6px 12px; }
+  .sessions-header h1 { display: none; }
+  .sessions-header { order: 2; }
+
+  .session-list {
+    display: flex;
+    gap: 4px;
+    padding: 6px 4px 6px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .session-item { flex: none; max-width: 180px; }
+  .session { padding-right: 28px; }
+  .session-detail { display: none; }
+}
