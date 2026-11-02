@@ -225,6 +225,48 @@ button {
 
 .status:empty { display: none; }
 
+.key-bar {
+  --key-bar-padding: max(0px, calc(env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--keyboard-inset, 0px);
+  z-index: 5;
+  display: none;
+  gap: 5px;
+  padding: 5px 8px calc(5px + var(--key-bar-padding));
+  overflow-x: auto;
+  background: #222;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+.touch-keys .key-bar { display: flex; }
+
+.touch-keys .terminal-view {
+  bottom: calc(var(--keyboard-inset, 0px) + 46px + max(0px, calc(env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))));
+  padding-bottom: 0;
+}
+
+.key-bar button {
+  flex: none;
+  min-width: 38px;
+  height: 36px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: #3a3a39;
+  color: #ececea;
+  font: 500 13px ui-monospace, "SF Mono", Menlo, monospace;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.key-bar button:active { background: #555553; }
+.key-bar button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.key-bar .key-gap { flex: 1; min-width: 4px; }
+
 @media (max-width: 700px) {
   .app { flex-direction: column; }
 

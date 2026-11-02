@@ -20,6 +20,17 @@
   </nav>
   <main class="terminals">
     <p class="status" role="status" aria-live="polite"></p>
+    <div class="key-bar" role="toolbar" aria-label="Terminal keys">
+      <button type="button" data-key="escape" aria-label="Escape">esc</button>
+      <button type="button" data-key="tab" aria-label="Tab">tab</button>
+      <button type="button" data-key="backtab" aria-label="Shift Tab">⇧tab</button>
+      <button type="button" data-key="control" aria-label="Control" aria-pressed="false">ctrl</button>
+      <span class="key-gap"></span>
+      <button type="button" data-key="left" aria-label="Left arrow">←</button>
+      <button type="button" data-key="up" aria-label="Up arrow">↑</button>
+      <button type="button" data-key="down" aria-label="Down arrow">↓</button>
+      <button type="button" data-key="right" aria-label="Right arrow">→</button>
+    </div>
   </main>
 </div>
 <script src="/web/xterm.js"></script>

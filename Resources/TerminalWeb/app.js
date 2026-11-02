@@ -269,6 +269,10 @@
       if (view.socket && view.socket.readyState === WebSocket.OPEN) view.socket.send(bytes);
     };
     terminal.onData(data => {
+      if (controlArmed && !sendingKey) {
+        data = controlCharacter(data);
+        setControlArmed(false);
+      }
       const text = encoder.encode(data);
       const message = new Uint8Array(text.length + 1);
       message[0] = 0x49;
@@ -470,6 +474,84 @@
     const id = decodeURIComponent(location.hash.slice(1));
     if (id && id !== selected) select(id);
   });
+  // Phone and tablet keyboards have no Escape, Tab, Control or arrow keys, which
+  // programs like Claude Code rely on, so touch screens get a row of them.
+  // Control applies to the next key typed. Arrows repeat while held.
+  const keyBar = document.querySelector(".key-bar");
+  const controlButton = keyBar.querySelector('[data-key="control"]');
+  const touchScreen = window.matchMedia("(pointer: coarse)");
+  let controlArmed = false;
+  let sendingKey = false;
+  let repeatTimer = null;
+
+  function showKeyBar() {
+    document.documentElement.classList.toggle("touch-keys", touchScreen.matches);
+  }
+  showKeyBar();
+  touchScreen.addEventListener("change", showKeyBar);
+
+  function setControlArmed(armed) {
+    controlArmed = armed;
+    controlButton.setAttribute("aria-pressed", String(armed));
+  }
+
+  function controlCharacter(data) {
+    if (data.length !== 1) return data;
+    const code = data.toUpperCase().charCodeAt(0);
+    if (data === " ") return "\x00";
+    if (data === "?") return "\x7f";
+    return code >= 0x40 && code <= 0x5f ? String.fromCharCode(code & 0x1f) : data;
+  }
+
+  function keySequence(key, terminal) {
+    const arrows = { up: "A", down: "B", right: "C", left: "D" };
+    if (arrows[key]) {
+      if (controlArmed) return `\x1b[1;5${arrows[key]}`;
+      return (terminal.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + arrows[key];
+    }
+    return { escape: "\x1b", tab: "\t", backtab: "\x1b[Z" }[key];
+  }
+
+  function pressKey(key) {
+    const view = views.get(selected);
+    if (!view) return;
+    if (key === "control") {
+      setControlArmed(!controlArmed);
+      if (controlArmed) view.terminal.focus();
+      return;
+    }
+    const sequence = keySequence(key, view.terminal);
+    if (!sequence) return;
+    setControlArmed(false);
+    sendingKey = true;
+    try { view.terminal.input(sequence, true); } finally { sendingKey = false; }
+  }
+
+  function stopRepeating() {
+    clearTimeout(repeatTimer);
+    clearInterval(repeatTimer);
+    repeatTimer = null;
+  }
+
+  // Taps act on pointerdown and cancel the default action, so the terminal
+  // keeps focus and an open keyboard stays open.
+  keyBar.addEventListener("pointerdown", event => {
+    const button = event.target.closest("button[data-key]");
+    if (!button) return;
+    event.preventDefault();
+    stopRepeating();
+    const key = button.dataset.key;
+    pressKey(key);
+    if (["left", "up", "down", "right"].includes(key)) {
+      repeatTimer = setTimeout(() => {
+        repeatTimer = setInterval(() => pressKey(key), 70);
+      }, 400);
+    }
+  });
+  keyBar.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
+  keyBar.addEventListener("mousedown", event => event.preventDefault());
+  for (const type of ["pointerup", "pointercancel", "pointerleave"]) keyBar.addEventListener(type, stopRepeating);
+
   // An on-screen keyboard covers the page rather than resizing it. The page
   // keeps its size so the keyboard slides over it, and the terminal moves its
   // bottom edge above the keyboard.
