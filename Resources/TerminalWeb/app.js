@@ -13,12 +13,29 @@
   let sessions = [];
   let shells = [];
   let home = "";
-  let selected = decodeURIComponent(location.hash.slice(1));
+  // A link to #new=PLACE[&command=COMMAND] starts a session in a container,
+  // running its login program or a command registered in its image; Outer
+  // Shell links here from a container's apps.
+  let pendingNew = null;
+  let selected = "";
+  readHash();
   let creating = null;
+  let createError = "";
   let fontSize = 13;
   try { fontSize = clampFontSize(Number(localStorage.getItem("fontSize")) || fontSize); } catch {}
 
   const unescapeField = value => value.replace(/\\(.)/g, (_, c) => c === "t" ? "\t" : c === "n" ? "\n" : c === "r" ? "\r" : c);
+
+  function readHash() {
+    const hash = location.hash.slice(1);
+    if (hash.startsWith("new=")) {
+      const parameters = new URLSearchParams(hash);
+      pendingNew = { place: parameters.get("new") || "", command: parameters.get("command") || "" };
+      history.replaceState(null, "", location.pathname + location.search);
+    } else {
+      selected = decodeURIComponent(hash);
+    }
+  }
 
   function parseSessions(text) {
     const lines = text.split("\n").filter(Boolean);
@@ -47,6 +64,12 @@
       for (const [id, view] of views) {
         if (!view.ended && !sessions.some(session => session.id === id)) dropView(id);
       }
+      if (pendingNew && !creating) {
+        const request = pendingNew;
+        pendingNew = null;
+        await createSession(request);
+        return;
+      }
       if (!sessions.length && !creating) {
         await createSession();
         return;
@@ -54,7 +77,7 @@
       if (!sessions.some(session => session.id === selected)) selected = sessions[0] ? sessions[0].id : "";
       if (selected && !views.has(selected)) select(selected);
       else render();
-      status.textContent = "";
+      status.textContent = createError;
     } catch (error) {
       status.textContent = "Could not reach Terminal. Retrying…";
     }
@@ -77,7 +100,7 @@
   function sessionName(session) {
     const view = views.get(session.id);
     const title = (view && view.title) || session.title;
-    return title && title !== session.command ? title : session.command || "Terminal";
+    return title && title !== session.command ? title : session.command || session.place || "Terminal";
   }
 
   // Rows are updated in place: on touch screens, a tap is dropped when the
@@ -131,7 +154,8 @@
       setText(row.name, sessionName(session));
       const view = views.get(session.id);
       const elsewhere = session.clients - (view && view.attached ? 1 : 0);
-      setText(row.detail, [describeLocation(session.cwd), describeAge(session.active), elsewhere > 0 ? "open elsewhere" : ""]
+      setText(row.detail, [session.place ? `in ${session.place}` : describeLocation(session.cwd), describeAge(session.active),
+        elsewhere > 0 ? "open elsewhere" : ""]
         .filter(Boolean).join(" · "));
       setAttribute(row.close, "aria-label", `Close ${sessionName(session)}`);
       return row.item;
@@ -159,19 +183,24 @@
     render();
   }
 
-  async function createSession(shell) {
+  // Starts a session on this computer, optionally with one of its shells, or
+  // in a container (place), optionally running a command registered there.
+  async function createSession({ shell = "", place = "", command = "" } = {}) {
     if (creating) return creating;
     creating = (async () => {
       const size = measureSize();
-      const kind = shell ? `&shell=${encodeURIComponent(shell)}` : "";
-      const response = await fetch(`/api/sessions?columns=${size.columns}&rows=${size.rows}${kind}`, { method: "POST" });
-      if (!response.ok) throw new Error(await response.text());
+      const query = new URLSearchParams({ columns: size.columns, rows: size.rows });
+      if (shell) query.set("shell", shell);
+      if (place) query.set("place", place);
+      if (command) query.set("command", command);
+      const response = await fetch(`/api/sessions?${query}`, { method: "POST" });
+      if (!response.ok) throw new Error((await response.text()).trim());
       const id = (await response.text()).trim();
       selected = id;
       await refresh();
       select(id);
     })();
-    try { await creating; } catch { status.textContent = "Could not start a terminal."; }
+    try { await creating; } catch (error) { createError = status.textContent = error.message || "Could not start a terminal."; }
     finally { creating = null; }
   }
 
@@ -348,7 +377,8 @@
     refresh();
   }
 
-  // Where more than one shell is available (Windows), "+" offers a choice.
+  // "+" offers this computer, or each of its shells where there are several
+  // (Windows), and each running container registered with Outer Shell.
   const newButton = document.querySelector(".new-session");
   let shellMenu = null;
   function closeShellMenu() {
@@ -356,30 +386,51 @@
     shellMenu = null;
     newButton.setAttribute("aria-expanded", "false");
   }
-  newButton.addEventListener("click", event => {
+  async function loadPlaces() {
+    try {
+      const response = await fetch("/api/places", { cache: "no-store" });
+      return response.ok ? parseSessions(await response.text()) : [];
+    } catch {
+      return [];
+    }
+  }
+  newButton.addEventListener("click", async event => {
     event.stopPropagation();
+    createError = status.textContent = "";
     if (shellMenu) {
       closeShellMenu();
       return;
     }
-    if (shells.length < 2) {
+    const places = await loadPlaces();
+    if (shells.length < 2 && !places.length) {
       createSession();
       return;
     }
     shellMenu = document.createElement("div");
     shellMenu.className = "shell-menu";
     shellMenu.setAttribute("role", "menu");
-    for (const shell of shells) {
+    const addItem = (label, options) => {
       const item = document.createElement("button");
       item.type = "button";
       item.setAttribute("role", "menuitem");
-      item.textContent = shell.name;
+      item.textContent = label;
       item.addEventListener("click", () => {
         closeShellMenu();
-        createSession(shell.kind);
+        createSession(options);
       });
       shellMenu.append(item);
-    }
+    };
+    const addHeading = label => {
+      const heading = document.createElement("div");
+      heading.className = "menu-heading";
+      heading.textContent = label;
+      shellMenu.append(heading);
+    };
+    if (places.length) addHeading("This computer");
+    if (shells.length < 2) addItem(places.length ? "New terminal" : "Terminal", {});
+    for (const shell of shells.length < 2 ? [] : shells) addItem(shell.name, { shell: shell.kind });
+    if (places.length) addHeading("Containers");
+    for (const place of places) addItem(place.name, { place: place.id });
     newButton.parentElement.append(shellMenu);
     newButton.setAttribute("aria-expanded", "true");
     shellMenu.querySelector("button").focus();
@@ -411,6 +462,11 @@
   window.addEventListener("online", reconnectAll);
   window.addEventListener("pageshow", reconnectAll);
   window.addEventListener("hashchange", () => {
+    if (location.hash.startsWith("#new=")) {
+      readHash();
+      refresh();
+      return;
+    }
     const id = decodeURIComponent(location.hash.slice(1));
     if (id && id !== selected) select(id);
   });

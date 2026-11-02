@@ -481,7 +481,8 @@ bool session_append_info(Bytes *out, const SessionInfo *info) {
     bool ok = append_info_field(&text, "id", info->id) && append_info_field(&text, "title", info->title) &&
         append_info_field(&text, "command", info->command) && append_info_field(&text, "cwd", info->cwd) &&
         append_info_field(&text, "created", created) && append_info_field(&text, "active", active) &&
-        append_info_field(&text, "clients", clients) && session_append_frame(out, SESSION_FRAME_INFO, text.data, text.size);
+        append_info_field(&text, "clients", clients) && (!info->place[0] || append_info_field(&text, "place", info->place)) &&
+        session_append_frame(out, SESSION_FRAME_INFO, text.data, text.size);
     bytes_free(&text);
     return ok;
 }
@@ -506,6 +507,7 @@ void session_parse_info(const char *data, size_t size, SessionInfo *info) {
             else if (key_length == 7 && !memcmp(data, "created", 7)) info->created = strtoll(number, NULL, 10);
             else if (key_length == 6 && !memcmp(data, "active", 6)) info->active = strtoll(number, NULL, 10);
             else if (key_length == 7 && !memcmp(data, "clients", 7)) info->clients = (unsigned)strtoul(number, NULL, 10);
+            else if (key_length == 5 && !memcmp(data, "place", 5)) session_clean_text(info->place, sizeof(info->place), value, value_length);
         }
         data = line_end + 1;
     }

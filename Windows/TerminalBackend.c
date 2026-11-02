@@ -7,7 +7,9 @@
 // pipe's name ends with a random suffix and is recorded in
 // %LOCALAPPDATA%\outershell\terminal\sessions\ID.session, a directory only
 // the user can read.
+#include "AppProcess.h"
 #include "Runtime.h"
+#include "../Backend/Registry.h"
 #include "../Backend/Session.h"
 
 #include <bcrypt.h>
@@ -281,22 +283,26 @@ static bool shell_command(const char *kind, wchar_t *program, size_t capacity, c
     return false;
 }
 
-static bool start_session(const char *kind, uint16_t columns, uint16_t rows, char id[17]) {
-    wchar_t program[MAX_PATH];
-    const wchar_t *argument = NULL;
+// Starts a keeper running `command` (NULL-terminated) as a new session. For a
+// session in a container, `place` names the container and `command_name`
+// describes what runs there; both are empty otherwise.
+static bool start_keeper(const wchar_t *const *command, const char *place, const char *command_name, uint16_t columns,
+                         uint16_t rows, char id[17]) {
     wchar_t home[MAX_PATH];
-    if (!shell_command(kind, program, MAX_PATH, &argument) || !random_hex(id, 8) ||
-        !GetEnvironmentVariableW(L"USERPROFILE", home, MAX_PATH)) {
-        return false;
-    }
+    if (!random_hex(id, 8) || !GetEnvironmentVariableW(L"USERPROFILE", home, MAX_PATH)) return false;
     wchar_t wide_id[17], column_text[16], row_text[16];
     _snwprintf(wide_id, 17, L"%hs", id);
     _snwprintf(column_text, 16, L"%u", columns);
     _snwprintf(row_text, 16, L"%u", rows);
-    const wchar_t *arguments[] = {app_executable, L"--keeper", L"--id", wide_id, L"--columns", column_text, L"--rows", row_text,
-                                  L"--cwd", home, L"--", program, argument};
+    wchar_t *place_wide = win_wide(place), *name_wide = win_wide(command_name);
+    const wchar_t *fixed[] = {app_executable, L"--keeper", L"--id", wide_id, L"--columns", column_text, L"--rows", row_text,
+                              L"--cwd", home, L"--place", place_wide ? place_wide : L"",
+                              L"--command-name", name_wide ? name_wide : L"", L"--"};
     StringBuilder line = {0};
-    for (size_t i = 0; i < sizeof(arguments) / sizeof(arguments[0]) && arguments[i]; i++) append_argument(&line, arguments[i]);
+    for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) append_argument(&line, fixed[i]);
+    for (size_t i = 0; command[i]; i++) append_argument(&line, command[i]);
+    free(place_wide);
+    free(name_wide);
     wchar_t *command_line = line.data ? win_wide(line.data) : NULL;
     free(line.data);
     if (!command_line) return false;
@@ -322,6 +328,130 @@ static bool start_session(const char *kind, uint16_t columns, uint16_t rows, cha
     free(path);
     CloseHandle(process.hProcess);
     return ready;
+}
+
+static bool start_session(const char *kind, uint16_t columns, uint16_t rows, char id[17]) {
+    wchar_t program[MAX_PATH];
+    const wchar_t *argument = NULL;
+    if (!shell_command(kind, program, MAX_PATH, &argument)) return false;
+    const wchar_t *command[] = {program, argument, NULL};
+    return start_keeper(command, "", "", columns, rows, id);
+}
+
+// Containers registered with Outer Shell, where a session runs the runtime's
+// `exec -it` (see Backend/Places.h).
+typedef struct {
+    char id[320];
+    char name[256];
+    char runtime[16];
+    char container[256];
+} Place;
+
+static bool list_places(Place **places, size_t *count) {
+    *places = NULL;
+    *count = 0;
+    Connection c = {0};
+    c.stop = app_stop;
+    c.pipe = app_open_registry(app_stop);
+    unsigned char header[4];
+    bool ok = c.pipe != INVALID_HANDLE_VALUE && connection_write(&c, registry_containers_request, sizeof(registry_containers_request)) &&
+              connection_read(&c, header, 4);
+    size_t size = ok ? (size_t)header[0] | (size_t)header[1] << 8 | (size_t)header[2] << 16 | (size_t)header[3] << 24 : 0;
+    unsigned char *bytes = ok && size >= 48 && size <= 16u * 1024 * 1024 ? malloc(size) : NULL;
+    ok = bytes && connection_read(&c, bytes, size);
+    if (c.pipe != INVALID_HANDLE_VALUE) CloseHandle(c.pipe);
+    RegistryContainer *containers = NULL;
+    size_t records = 0;
+    ok = ok && registry_parse_containers(bytes, size, &containers, &records);
+    free(bytes);
+    *places = ok && records ? calloc(records, sizeof(Place)) : NULL;
+    for (size_t i = 0; *places && i < records; i++) {
+        const RegistryContainer *container = &containers[i];
+        bool docker = !strcmp(container->runtime, "docker"), wslc = !strcmp(container->runtime, "wslc");
+        if ((!docker && !wslc) || strcmp(container->state, "running")) continue;
+        Place *place = &(*places)[(*count)++];
+        snprintf(place->id, sizeof(place->id), "%s", container->id);
+        snprintf(place->name, sizeof(place->name), "%s", container->name);
+        snprintf(place->runtime, sizeof(place->runtime), "%s", container->runtime);
+        snprintf(place->container, sizeof(place->container), "%s", container->container);
+    }
+    free(containers);
+    return ok;
+}
+
+static bool find_place(const char *id, Place *place) {
+    Place *places = NULL;
+    size_t count = 0;
+    bool found = false;
+    if (list_places(&places, &count))
+        for (size_t i = 0; i < count && !found; i++)
+            if (!_stricmp(places[i].id, id)) {
+                *place = places[i];
+                found = true;
+            }
+    free(places);
+    return found;
+}
+
+static bool registered_command(const Place *place, const char *command_id, RegistryCommand *command) {
+    if (!registry_valid_identifier(command_id)) return false;
+    char path[512];
+    registry_command_path(command_id, path, sizeof(path));
+    const char *arguments[] = {"exec", "-i", place->container, "cat", path, NULL};
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    AppProcess process = {0};
+    char text[8192];
+    size_t used = 0;
+    bool ok = job && app_process_start(app_stop, job, place->runtime, arguments, &process);
+    while (ok && used + 1 < sizeof(text)) {
+        size_t length = 0;
+        if (!connection_read_some(&process.output, text + used, sizeof(text) - 1 - used, &length) || !length) break;
+        used += length;
+    }
+    text[used] = '\0';
+    if (process.process) app_process_close(&process);
+    if (job) CloseHandle(job);
+    return ok && registry_parse_command(text, command);
+}
+
+// Starts a session in a container: its login program, or a registered command.
+static bool start_place_session(const Place *place, const char *command_id, uint16_t columns, uint16_t rows, char id[17],
+                                const char **error) {
+    RegistryCommand registered;
+    bool has_command = command_id && *command_id;
+    if (has_command && !registered_command(place, command_id, &registered)) {
+        *error = "That container has no such command.\n";
+        return false;
+    }
+    wchar_t *runtime = app_runtime_executable(place->runtime);
+    if (!runtime) {
+        *error = "The container runtime is not installed.\n";
+        return false;
+    }
+    const char *program[] = {"/bin/sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh -l", NULL};
+    const char *const *inner = has_command ? (const char *const *)registered.arguments : program;
+    const char *options[] = {"exec", "-it", "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor"};
+    wchar_t *command[96] = {runtime};
+    size_t n = 1;
+    for (size_t i = 0; i < sizeof(options) / sizeof(*options); i++) command[n++] = win_wide(options[i]);
+    if (has_command && registered.user[0]) {
+        command[n++] = win_wide("-u");
+        command[n++] = win_wide(registered.user);
+    }
+    if (has_command && registered.directory[0]) {
+        command[n++] = win_wide("-w");
+        command[n++] = win_wide(registered.directory);
+    }
+    command[n++] = win_wide(place->container);
+    for (size_t i = 0; inner[i] && n + 1 < sizeof(command) / sizeof(*command); i++) command[n++] = win_wide(inner[i]);
+    command[n] = NULL;
+    bool complete = true;
+    for (size_t i = 0; i < n; i++) complete = complete && command[i];
+    const char *name = has_command ? (registered.name[0] ? registered.name : command_id) : "";
+    bool ok = complete && start_keeper((const wchar_t *const *)command, place->name, name, columns, rows, id);
+    for (size_t i = 0; i < n; i++) free(command[i]);
+    if (!ok) *error = "Could not start a terminal session.\n";
+    return ok;
 }
 
 static bool same_origin(const HttpRequest *r) {
@@ -357,7 +487,7 @@ static void handle_list(Connection *c) {
         return;
     }
     StringBuilder tsv = {0};
-    sb_append(&tsv, "id\tcommand\ttitle\tcwd\tcreated\tactive\tclients\n");
+    sb_append(&tsv, "id\tcommand\ttitle\tcwd\tcreated\tactive\tclients\tplace\n");
     for (size_t i = 0; i < count; i++) {
         const SessionInfo *info = &entries[i].info;
         char numbers[96];
@@ -368,8 +498,10 @@ static void handle_list(Connection *c) {
         append_field(&tsv, info->title);
         sb_append(&tsv, "\t");
         append_field(&tsv, info->cwd);
-        snprintf(numbers, sizeof(numbers), "\t%lld\t%lld\t%u\n", (long long)info->created, (long long)info->active, info->clients);
+        snprintf(numbers, sizeof(numbers), "\t%lld\t%lld\t%u\t", (long long)info->created, (long long)info->active, info->clients);
         sb_append(&tsv, numbers);
+        append_field(&tsv, info->place);
+        sb_append(&tsv, "\n");
     }
     free(entries);
     wchar_t home[MAX_PATH] = L"";
@@ -392,14 +524,44 @@ static unsigned query_number(const HttpRequest *r, const char *name, unsigned fa
     return number > 0 && number <= 1000 ? (unsigned)number : fallback;
 }
 
+static void handle_places(Connection *c) {
+    Place *places = NULL;
+    size_t count = 0;
+    list_places(&places, &count);
+    StringBuilder tsv = {0};
+    sb_append(&tsv, "id\tname\n");
+    for (size_t i = 0; i < count; i++) {
+        append_field(&tsv, places[i].id);
+        sb_append(&tsv, "\t");
+        append_field(&tsv, places[i].name);
+        sb_append(&tsv, "\n");
+    }
+    free(places);
+    respond(c, "200 OK", "text/tab-separated-values; charset=utf-8", tsv.data, tsv.length, NULL);
+    free(tsv.data);
+}
+
 static void handle_create(Connection *c, const HttpRequest *r) {
-    char *shell = http_query(r, "shell");
+    char *shell = http_query(r, "shell"), *place_id = http_query(r, "place"), *command_id = http_query(r, "command");
+    uint16_t columns = (uint16_t)query_number(r, "columns", 80), rows = (uint16_t)query_number(r, "rows", 24);
     char id[17];
-    bool ok = start_session(shell && *shell ? shell : "powershell", (uint16_t)query_number(r, "columns", 80),
-                            (uint16_t)query_number(r, "rows", 24), id);
+    const char *error = "Could not start a terminal session.\n";
+    const char *status = "500 Internal Server Error";
+    bool ok;
+    if (place_id && *place_id) {
+        Place place;
+        ok = find_place(place_id, &place);
+        if (!ok) error = "That container is not running.\n";
+        ok = ok && start_place_session(&place, command_id, columns, rows, id, &error);
+        if (!ok && strcmp(error, "Could not start a terminal session.\n")) status = "404 Not Found";
+    } else {
+        ok = start_session(shell && *shell ? shell : "powershell", columns, rows, id);
+    }
     free(shell);
+    free(place_id);
+    free(command_id);
     if (ok) respond(c, "201 Created", "text/plain; charset=utf-8", id, strlen(id), NULL);
-    else respond(c, "500 Internal Server Error", "text/plain; charset=utf-8", "Could not start a terminal session.\n", 36, NULL);
+    else respond(c, status, "text/plain; charset=utf-8", error, strlen(error), NULL);
 }
 
 static void handle_close(Connection *c, const char *id) {
@@ -582,6 +744,8 @@ static void serve(Connection *c, void *context) {
     bool get = !strcmp(r.method, "GET");
     if (!strncmp(r.path, "/api/", 5) && !same_origin(&r)) {
         respond(c, "403 Forbidden", "text/plain; charset=utf-8", "Cross-origin requests are not allowed.\n", 39, NULL);
+    } else if (!strcmp(r.path, "/api/places") && get) {
+        handle_places(c);
     } else if (!strcmp(r.path, "/api/sessions")) {
         if (get) handle_list(c);
         else handle_create(c, &r);
@@ -638,6 +802,7 @@ static struct {
     char id[40];
     char command[256];
     char cwd[1024];
+    char place[256];
     wchar_t *pipe_name;
     SECURITY_ATTRIBUTES attributes;
     HANDLE next_pipe;
@@ -719,7 +884,8 @@ static unsigned __stdcall keeper_client_thread(void *argument) {
                     snprintf(info.id, sizeof(info.id), "%s", keeper.id);
                     snprintf(info.title, sizeof(info.title), "%s", session_terminal_title(keeper.terminal));
                     snprintf(info.command, sizeof(info.command), "%s", keeper.command);
-                    snprintf(info.cwd, sizeof(info.cwd), "%s", keeper.cwd);
+                    snprintf(info.cwd, sizeof(info.cwd), "%s", keeper.place[0] ? "" : keeper.cwd);
+                    snprintf(info.place, sizeof(info.place), "%s", keeper.place);
                     info.created = keeper.created;
                     info.active = keeper.active;
                     for (size_t i = 0; i < keeper.client_count; i++) info.clients += keeper.clients[i]->attached && !keeper.clients[i]->dead;
@@ -821,7 +987,7 @@ static unsigned __stdcall keeper_accept_thread(void *argument) {
 }
 
 static int keeper_main(int argc, wchar_t **argv) {
-    const wchar_t *cwd = L"";
+    const wchar_t *cwd = L"", *place = L"", *command_name = L"";
     unsigned columns = 80, rows = 24;
     int command_start = 0;
     for (int i = 2; i < argc; i++) {
@@ -835,6 +1001,8 @@ static int keeper_main(int argc, wchar_t **argv) {
             snprintf(keeper.id, sizeof(keeper.id), "%s", id ? id : "");
             free(id);
         } else if (!wcscmp(argv[i], L"--cwd")) cwd = argv[++i];
+        else if (!wcscmp(argv[i], L"--place")) place = argv[++i];
+        else if (!wcscmp(argv[i], L"--command-name")) command_name = argv[++i];
         else if (!wcscmp(argv[i], L"--columns")) columns = wcstoul(argv[++i], NULL, 10);
         else if (!wcscmp(argv[i], L"--rows")) rows = wcstoul(argv[++i], NULL, 10);
         else return 2;
@@ -861,6 +1029,11 @@ static int keeper_main(int argc, wchar_t **argv) {
     free(program_name);
     char *extension = strrchr(keeper.command, '.');
     if (extension && !_stricmp(extension, ".exe")) *extension = 0;
+    char *place_text = win_utf8(place), *command_name_text = win_utf8(command_name);
+    snprintf(keeper.place, sizeof(keeper.place), "%s", place_text ? place_text : "");
+    if (keeper.place[0]) snprintf(keeper.command, sizeof(keeper.command), "%s", command_name_text ? command_name_text : "");
+    free(place_text);
+    free(command_name_text);
 
     char *sid = win_sid();
     char suffix[33];

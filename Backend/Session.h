@@ -98,6 +98,8 @@ typedef struct {
     char title[256];
     char command[256];
     char cwd[1024];
+    // The container the session runs in, or empty for this computer.
+    char place[256];
     int64_t created;
     int64_t active;
     unsigned clients;

@@ -28,6 +28,36 @@
 #define SEND_FLAGS 0
 #endif
 
+// Adds the folder holding Outer Shell's outerctl to PATH, so sessions and the
+// agents run in them can use it. It goes last, so it never shadows anything.
+static void add_outerctl_to_path(void) {
+    const char *home = getenv("HOME");
+    char directories[3][PATH_MAX] = {{0}};
+    const char *override = getenv("OUTERSHELL_HOME");
+    if (override && override[0]) snprintf(directories[0], PATH_MAX, "%s/bin", override);
+#ifdef __APPLE__
+    if (home) snprintf(directories[1], PATH_MAX, "%s/Library/Application Support/outershell/bin", home);
+    snprintf(directories[2], PATH_MAX, "/Library/Application Support/outershell/bin");
+#else
+    const char *state = getenv("XDG_STATE_HOME");
+    if (state && state[0]) snprintf(directories[1], PATH_MAX, "%s/outershell/bin", state);
+    else if (home) snprintf(directories[1], PATH_MAX, "%s/.local/state/outershell/bin", home);
+    snprintf(directories[2], PATH_MAX, "/opt/outershell/bin");
+#endif
+    for (size_t i = 0; i < 3; i++) {
+        char outerctl[PATH_MAX + 16];
+        if (!directories[i][0]) continue;
+        snprintf(outerctl, sizeof(outerctl), "%s/outerctl", directories[i]);
+        if (access(outerctl, X_OK)) continue;
+        const char *path = getenv("PATH");
+        char combined[8192];
+        if (snprintf(combined, sizeof(combined), "%s%s%s", path && path[0] ? path : "/usr/bin:/bin",
+                     ":", directories[i]) < (int)sizeof(combined))
+            setenv("PATH", combined, 1);
+        return;
+    }
+}
+
 static bool private_directory(const char *path) {
     if (mkdir(path, 0700) != 0 && errno != EEXIST) return false;
     struct stat status;
@@ -300,16 +330,17 @@ static bool spawn(const char *const *arguments, bool scoped, const char *id) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-bool keeper_start(const char *executable, const char *const *command, const char *cwd, uint16_t columns,
-                  uint16_t rows, char id[17]) {
+bool keeper_start(const char *executable, const char *const *command, const char *cwd, const char *place,
+                  const char *command_name, uint16_t columns, uint16_t rows, char id[17]) {
     char endpoint[1024];
     if (!random_hex(id, 8) || !socket_path_for(id, endpoint, sizeof(endpoint))) return false;
     char column_text[16];
     char row_text[16];
     snprintf(column_text, sizeof(column_text), "%u", columns);
     snprintf(row_text, sizeof(row_text), "%u", rows);
-    const char *arguments[64] = {executable, "--keeper", "--id", id, "--columns", column_text, "--rows", row_text, "--cwd", cwd, "--"};
-    size_t count = 11;
+    const char *arguments[80] = {executable, "--keeper", "--id", id, "--columns", column_text, "--rows", row_text, "--cwd", cwd,
+                                 "--place", place, "--command-name", command_name, "--"};
+    size_t count = 15;
     for (size_t i = 0; command[i] && count + 1 < sizeof(arguments) / sizeof(arguments[0]); i++) arguments[count++] = command[i];
     arguments[count] = NULL;
     bool scoped = use_systemd_scope();
@@ -405,6 +436,8 @@ static const char *base_name(const char *path) {
 int keeper_main(int argc, char **argv) {
     const char *id = "";
     const char *cwd = "";
+    const char *place = "";
+    const char *command_name = "";
     unsigned columns = 80;
     unsigned rows = 24;
     char **command = NULL;
@@ -416,6 +449,8 @@ int keeper_main(int argc, char **argv) {
         if (i + 1 >= argc) return 2;
         if (!strcmp(argv[i], "--id")) id = argv[++i];
         else if (!strcmp(argv[i], "--cwd")) cwd = argv[++i];
+        else if (!strcmp(argv[i], "--place")) place = argv[++i];
+        else if (!strcmp(argv[i], "--command-name")) command_name = argv[++i];
         else if (!strcmp(argv[i], "--columns")) columns = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--rows")) rows = (unsigned)strtoul(argv[++i], NULL, 10);
         else return 2;
@@ -479,6 +514,7 @@ int keeper_main(int argc, char **argv) {
         signal(SIGHUP, SIG_DFL);
         signal(SIGPIPE, SIG_DFL);
         setenv("OUTERSHELL_TERMINAL_SESSION", id, 1);
+        add_outerctl_to_path();
         if (cwd[0] && chdir(cwd) != 0 && getenv("HOME") && chdir(getenv("HOME")) != 0) {
         }
         execvp(command[0], command);
@@ -597,9 +633,14 @@ int keeper_main(int argc, char **argv) {
                                 memset(&info, 0, sizeof(info));
                                 snprintf(info.id, sizeof(info.id), "%s", id);
                                 snprintf(info.title, sizeof(info.title), "%s", session_terminal_title(terminal));
-                                foreground(master, child, info.command, sizeof(info.command), info.cwd, sizeof(info.cwd));
-                                if (!info.command[0]) snprintf(info.command, sizeof(info.command), "%s", base_name(command[0]));
-                                if (!info.cwd[0]) snprintf(info.cwd, sizeof(info.cwd), "%s", cwd);
+                                if (place[0]) {
+                                    snprintf(info.place, sizeof(info.place), "%s", place);
+                                    snprintf(info.command, sizeof(info.command), "%s", command_name);
+                                } else {
+                                    foreground(master, child, info.command, sizeof(info.command), info.cwd, sizeof(info.cwd));
+                                    if (!info.command[0]) snprintf(info.command, sizeof(info.command), "%s", base_name(command[0]));
+                                    if (!info.cwd[0]) snprintf(info.cwd, sizeof(info.cwd), "%s", cwd);
+                                }
                                 info.created = created;
                                 info.active = active;
                                 for (size_t j = 0; j < client_count; j++) info.clients += clients[j].attached ? 1 : 0;

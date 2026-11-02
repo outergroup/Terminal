@@ -11,11 +11,21 @@
 // HTTP API:
 //   GET    /api/sessions                    sessions as TSV: a header row, then
 //                                           id, command, title, cwd, created,
-//                                           active, clients; fields escape tab,
-//                                           newline, carriage return and
-//                                           backslash as \t \n \r \\. The
-//                                           Terminal-Home header gives $HOME.
-//   POST   /api/sessions?columns=C&rows=R    start a session; the body is its ID
+//                                           active, clients, place; fields
+//                                           escape tab, newline, carriage return
+//                                           and backslash as \t \n \r \\. The
+//                                           Terminal-Home header gives $HOME,
+//                                           and place is the container's name
+//                                           for a session in a container.
+//   GET    /api/places                      running containers registered with
+//                                           Outer Shell, as TSV: id (the
+//                                           container's ID in Outer Shell), name
+//   POST   /api/sessions?columns=C&rows=R[&place=ID[&command=COMMAND]]
+//                                           start a session, on this computer
+//                                           or in a container, running the
+//                                           container's login shell or a command
+//                                           registered in its image (see
+//                                           Places.h); the body is its ID
 //   POST   /api/sessions/ID/close           close a session
 //   GET    /api/sessions/ID/attach?columns=C&rows=R[&from=POSITION]
 //                                           WebSocket attached to the session
@@ -51,6 +61,7 @@
 #include <unistd.h>
 
 #include "Keeper.h"
+#include "Places.h"
 #include "Session.h"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -223,10 +234,20 @@ static bool query_value(const char *query, const char *name, char *out, size_t c
         const char *end = strchr(p, '&');
         size_t length = end ? (size_t)(end - p) : strlen(p);
         if (length > name_length && strncmp(p, name, name_length) == 0 && p[name_length] == '=') {
-            size_t value_length = length - name_length - 1;
-            if (value_length >= capacity) value_length = capacity - 1;
-            memcpy(out, p + name_length + 1, value_length);
-            out[value_length] = '\0';
+            const char *value = p + name_length + 1, *value_end = p + length;
+            size_t used = 0;
+            while (value < value_end && used + 1 < capacity) {
+                unsigned byte;
+                if (*value == '%' && value_end - value >= 3 && isxdigit((unsigned char)value[1]) &&
+                    isxdigit((unsigned char)value[2]) && sscanf(value + 1, "%2x", &byte) == 1) {
+                    out[used++] = (char)byte;
+                    value += 3;
+                } else {
+                    out[used++] = *value == '+' ? ' ' : *value;
+                    value++;
+                }
+            }
+            out[used] = '\0';
             return true;
         }
         p = end ? end + 1 : NULL;
@@ -316,7 +337,7 @@ static void handle_list(int fd) {
     size_t count = 0;
     if (keeper_list(&entries, &count)) {
         Buffer tsv = {0};
-        buffer_append_string(&tsv, "id\tcommand\ttitle\tcwd\tcreated\tactive\tclients\n");
+        buffer_append_string(&tsv, "id\tcommand\ttitle\tcwd\tcreated\tactive\tclients\tplace\n");
         for (size_t i = 0; i < count; i++) {
             const SessionInfo *info = &entries[i].info;
             append_tsv_field(&tsv, info->id);
@@ -326,7 +347,9 @@ static void handle_list(int fd) {
             append_tsv_field(&tsv, info->title);
             buffer_append_string(&tsv, "\t");
             append_tsv_field(&tsv, info->cwd);
-            buffer_appendf(&tsv, "\t%lld\t%lld\t%u\n", (long long)info->created, (long long)info->active, info->clients);
+            buffer_appendf(&tsv, "\t%lld\t%lld\t%u\t", (long long)info->created, (long long)info->active, info->clients);
+            append_tsv_field(&tsv, info->place);
+            buffer_append_string(&tsv, "\n");
         }
         Buffer headers = {0};
         buffer_append_string(&headers, "Terminal-Home: ");
@@ -341,12 +364,57 @@ static void handle_list(int fd) {
     free(entries);
 }
 
+static void handle_places(int fd) {
+    Place *places = NULL;
+    size_t count = 0;
+    places_list(&places, &count);
+    Buffer tsv = {0};
+    buffer_append_string(&tsv, "id\tname\n");
+    for (size_t i = 0; i < count; i++) {
+        append_tsv_field(&tsv, places[i].id);
+        buffer_append_string(&tsv, "\t");
+        append_tsv_field(&tsv, places[i].name);
+        buffer_append_string(&tsv, "\n");
+    }
+    send_response(fd, "200 OK", "text/tab-separated-values; charset=utf-8", tsv.data, tsv.size, NULL);
+    buffer_free(&tsv);
+    free(places);
+}
+
 static void handle_create(int fd, const Request *request) {
     unsigned columns = query_number(request->query, "columns", 80, 1000);
     unsigned rows = query_number(request->query, "rows", 24, 1000);
-    const char *command[] = {g_shell, "-l", NULL};
+    char place_id[320] = "", command_id[256] = "";
+    query_value(request->query, "place", place_id, sizeof(place_id));
+    query_value(request->query, "command", command_id, sizeof(command_id));
+    const char *local[] = {g_shell, "-l", NULL};
+    const char *container_shell[] = {"/bin/sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh -l", NULL};
+    const char *arguments[96];
+    const char *const *command = local;
+    const char *place_name = "", *command_name = "";
+    Place place;
+    RegistryCommand registered;
+    if (place_id[0]) {
+        if (!places_find(place_id, &place)) {
+            send_text(fd, "404 Not Found", "That container is not running.\n");
+            return;
+        }
+        if (command_id[0] && !place_registered_command(&place, command_id, &registered)) {
+            send_text(fd, "404 Not Found", "That container has no such command.\n");
+            return;
+        }
+        bool has_command = command_id[0] != '\0';
+        if (!place_exec_command(&place, has_command ? registered.user : "", has_command ? registered.directory : "",
+                                has_command ? (const char *const *)registered.arguments : container_shell, arguments, 96)) {
+            send_text(fd, "400 Bad Request", "That command is too long.\n");
+            return;
+        }
+        command = arguments;
+        place_name = place.name;
+        command_name = has_command ? (registered.name[0] ? registered.name : command_id) : "";
+    }
     char id[17];
-    if (keeper_start(g_executable, command, g_home, (uint16_t)columns, (uint16_t)rows, id)) {
+    if (keeper_start(g_executable, command, g_home, place_name, command_name, (uint16_t)columns, (uint16_t)rows, id)) {
         send_response(fd, "201 Created", "text/plain; charset=utf-8", id, strlen(id), NULL);
     } else {
         send_text(fd, "500 Internal Server Error", "Could not start a terminal session.\n");
@@ -599,6 +667,10 @@ static void handle_connection(int fd) {
                 return;
             }
         }
+    }
+    if (strcmp(path, "/api/places") == 0 && get) {
+        handle_places(fd);
+        return;
     }
     if (strcmp(path, "/api/sessions") == 0) {
         if (get) handle_list(fd);

@@ -91,6 +91,8 @@ button {
   display: flex;
   flex-direction: column;
   min-width: 170px;
+  max-height: 70vh;
+  overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -107,6 +109,21 @@ button {
 }
 
 .shell-menu button:focus-visible { background: var(--line); outline: none; }
+
+.shell-menu .menu-heading {
+  padding: 6px 10px 2px;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.shell-menu .menu-heading:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
 
 .session-list {
   list-style: none;

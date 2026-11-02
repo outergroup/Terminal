@@ -28,6 +28,14 @@ binary frames rather than JSON.
 On Windows, new sessions can run PowerShell (PowerShell 7 when installed) or
 Command Prompt.
 
+Sessions can also run in containers registered with Outer Shell: "+" lists the
+running ones. Such a session is still a keeper on this computer, running the
+container runtime's `exec -it`, so nothing is installed in the container. It
+runs the container's login program, or a command registered in its image with
+`outerctl image add-command`; Outer Shell opens those through a link to
+`#new=CONTAINER-ID&command=COMMAND-ID`. The command is always read from the
+container, never from the link. See `Backend/Places.h`.
+
 ## Layout
 
 ```text

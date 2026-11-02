@@ -3,7 +3,9 @@
 
 Starts a backend with its own socket, creates a session, types into it,
 disconnects, resumes from the last output position, checks that only the
-missed output arrives, and closes the session.
+missed output arrives, and closes the session. It also starts sessions in a
+container, served by a stand-in Outer Shell registry and a stand-in `docker`
+that runs the container's commands on this computer.
 
     python3 Scripts/test_backend.py [path/to/TerminalBackend]
 
@@ -17,6 +19,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def build():
     out = os.path.join(tempfile.mkdtemp(prefix="terminal-test."), "TerminalBackend")
-    sources = [os.path.join(ROOT, "Backend", name) for name in ("main.c", "Session.c", "Keeper.c")]
+    sources = [os.path.join(ROOT, "Backend", name) for name in ("main.c", "Session.c", "Keeper.c", "Places.c", "Registry.c")]
     subprocess.run(["cc", "-std=gnu17", "-O1", *sources, "-o", out, "-lpthread"], check=True)
     return out
 
@@ -137,6 +140,74 @@ def sessions():
 
 
 env = dict(os.environ, SHELL="/bin/sh")
+outer_shell_home = os.path.join(WORK, "outershell")
+os.makedirs(os.path.join(outer_shell_home, "bin"))
+with open(os.path.join(outer_shell_home, "bin", "outerctl"), "w") as f:
+    f.write("#!/bin/sh\necho outerctl-$((6*7))\n")
+os.chmod(os.path.join(outer_shell_home, "bin", "outerctl"), 0o755)
+env.update(OUTERSHELL_HOME=outer_shell_home)
+CONTAINER = "c0ffee" * 10 + "c0de"
+
+
+def serve_registry(path):
+    """Answers Outer Shell's environment query with one running Docker container."""
+    fields = ["test-container", "Test Container", "docker", CONTAINER, "running", "alpine", "", "", ""]
+    strings = b"".join(field.encode() for field in fields)
+    variable = 48 + 72
+    payload = bytearray(b"OSED" + struct.pack("<IIIIIII", 1, variable + len(strings), 1, 72, 48, variable, 0))
+    payload += struct.pack("<IIQ", variable, 0, 0)
+    offset = variable
+    record = b""
+    for field in fields:
+        record += struct.pack("<II", offset, len(field.encode()))
+        offset += len(field.encode())
+    payload += record + strings
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(path)
+    listener.listen(8)
+
+    def loop():
+        while True:
+            client, _ = listener.accept()
+            client.recv(6)
+            client.sendall(struct.pack("<I", len(payload)) + bytes(payload))
+            client.close()
+    threading.Thread(target=loop, daemon=True).start()
+
+
+if not INSTALLED:
+    bin_directory = os.path.join(WORK, "bin")
+    commands = os.path.join(WORK, "commands.d")
+    os.makedirs(bin_directory)
+    os.makedirs(commands)
+    with open(os.path.join(commands, "greet.outercommand"), "w") as f:
+        f.write("[Command]\nFormat=1\nID=greet\nName=Greeter\nWorkingDirectory=/tmp\nUser=\nIconPath=\n"
+                "Executable=/bin/sh\nArgument=-c\nArgument=echo greeting-$((6*7)) in $(pwd); exec sh\n")
+    with open(os.path.join(bin_directory, "docker"), "w") as f:
+        f.write(f"""#!/bin/sh
+# Stands in for `docker exec`, running the command on this computer.
+[ "$1" = exec ] || exit 2
+shift
+directory=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i|-it) shift ;;
+        -e) export "$2"; shift 2 ;;
+        -u) shift 2 ;;
+        -w) directory=$2; shift 2 ;;
+        *) break ;;
+    esac
+done
+[ "$1" = {CONTAINER} ] || exit 3
+shift
+if [ "$1" = cat ]; then exec cat "{commands}/$(basename "$2")"; fi
+[ -n "$directory" ] && cd "$directory"
+exec "$@"
+""")
+    os.chmod(os.path.join(bin_directory, "docker"), 0o755)
+    registry = os.path.join(WORK, "registry.sock")
+    serve_registry(registry)
+    env.update(PATH=bin_directory + ":" + os.environ.get("PATH", ""), OUTERSHELLD_API_SOCKET=registry)
 
 
 def start_backend():
@@ -182,6 +253,9 @@ try:
     time.sleep(1)
     ws.type("echo first-$((40+2))\r")
     check("runs commands", ws.read_until("first-42"))
+    if not INSTALLED:
+        ws.type("outerctl\r")
+        check("finds outerctl on PATH", ws.read_until("outerctl-42"))
     ws.read_until("never", timeout=0.5)
     check("reports its output position", ws.position is not None)
     position = ws.position
@@ -220,6 +294,34 @@ try:
     status, _, _ = http("POST", f"/api/sessions/{other}/close")
     time.sleep(0.5)
     check("close ends a session", status == 204 and not any(row[0] == other for row in sessions()))
+
+    if not INSTALLED:
+        status, _, body = http("GET", "/api/places")
+        check("lists running containers as places", status == 200 and "test-container\tTest Container" in body.decode())
+        status, _, body = http("POST", f"/api/sessions?columns=80&rows=24&place=test-container")
+        in_container = body.decode().strip()
+        check("starts a session in a container", status == 201 and len(in_container) == 16)
+        row = next((row for row in sessions() if row[0] == in_container), None)
+        check("labels the session with its container", row is not None and row[7] == "Test Container")
+        ws = WebSocket(f"/api/sessions/{in_container}/attach?columns=80&rows=24")
+        time.sleep(1)
+        ws.type("echo inside-$TERM\r")
+        check("the container session runs with a terminal", ws.read_until("inside-xterm-256color"))
+        ws.close()
+        http("POST", f"/api/sessions/{in_container}/close")
+        status, _, body = http("POST", f"/api/sessions?columns=80&rows=24&place=test-container&command=greet")
+        command_session = body.decode().strip()
+        check("starts a command registered in the container", status == 201)
+        ws = WebSocket(f"/api/sessions/{command_session}/attach?columns=80&rows=24")
+        check("runs it in its working directory", ws.read_until("greeting-42 in /tmp"))
+        ws.close()
+        row = next((row for row in sessions() if row[0] == command_session), None)
+        check("names the session after the command", row is not None and row[1] == "Greeter")
+        http("POST", f"/api/sessions/{command_session}/close")
+        status, _, _ = http("POST", f"/api/sessions?columns=80&rows=24&place=test-container&command=missing")
+        check("refuses commands the container does not register", status == 404)
+        status, _, _ = http("POST", "/api/sessions?columns=80&rows=24&place=unknown")
+        check("refuses unknown containers", status == 404)
     print("all passed")
 finally:
     if backend:
