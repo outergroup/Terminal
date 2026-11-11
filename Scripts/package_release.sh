@@ -21,6 +21,13 @@ require_file() {
     fi
 }
 
+require_file "${REPO_ROOT}/VERSION"
+APP_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
+if [[ ! "${APP_VERSION}" =~ ^[0-9A-Za-z.+_-]+$ ]]; then
+    echo "error: ${REPO_ROOT}/VERSION must hold a version such as 1.1.0" >&2
+    exit 1
+fi
+
 for variant in RemoteLinuxBinaries/aarch64 RemoteLinuxBinaries/x86_64 RemoteLinuxBinariesMusl/aarch64 RemoteLinuxBinariesMusl/x86_64; do
     require_file "${PACKAGE_ROOT}/${variant}/TerminalBackend"
 done
@@ -80,6 +87,7 @@ package_linux_variant() {
     install_web "${app_root}/web"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${app_root}/app-icon.png"
     install -m 0755 "${PACKAGE_ROOT}/${binary_directory}/${arch}/TerminalBackend" "${app_root}/${binary_directory}/${arch}/TerminalBackend"
+    printf '%s\n' "${APP_VERSION}" > "${app_root}/version"
     tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_APP_ROOT}/${output_name}.tar.gz" Terminal
     echo "Packaged ${OUTPUT_APP_ROOT}/${output_name}.tar.gz"
 }
@@ -96,7 +104,7 @@ package_macos_variant() {
     chmod 0755 "${bundle}/Contents/MacOS/TerminalBackend"
     install -m 0644 "${REPO_ROOT}/app-icon.png" "${bundle}/Contents/Resources/app-icon.png"
     install_web "${bundle}/Contents/Resources/web"
-    cat > "${bundle}/Contents/Info.plist" <<'__TERMINAL_INFO_PLIST__'
+    cat > "${bundle}/Contents/Info.plist" <<__TERMINAL_INFO_PLIST__
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -110,9 +118,9 @@ package_macos_variant() {
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${APP_VERSION}</string>
     <key>LSBackgroundOnly</key>
     <true/>
 </dict>
@@ -120,6 +128,7 @@ package_macos_variant() {
 __TERMINAL_INFO_PLIST__
     sign_macos_app "${bundle}"
     notarize_macos_app_if_requested "${bundle}"
+    printf '%s\n' "${APP_VERSION}" > "${app_root}/version"
     tar --format ustar --no-xattrs -C "${STAGING_ROOT}" -czf "${OUTPUT_APP_ROOT}/${output_name}.tar.gz" Terminal
     echo "Packaged ${OUTPUT_APP_ROOT}/${output_name}.tar.gz"
 }
